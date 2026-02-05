@@ -1,133 +1,235 @@
 package main
-import ("fmt"
-	"strings"
+
+import (
+	"bufio"
+	"fmt"
 	"os"
-	"github.com/joho/godotenv"
+	"strconv"
+	"strings"
+
 	"Transaction_system/requests"
+
+	"github.com/joho/godotenv"
+)
+
+const (
+	collectURL      = "https://demo.campay.net/api/collect/"
+	transactionURL  = "https://demo.campay.net/api/transaction/"
+	countryCode     = "237"
+	dividerWidth    = 60
+	requiredLength  = 9
+	firstDigit      = 6
+)
+
+// Provider represents a mobile money provider
+type Provider string
+
+const (
+	ProviderMTN    Provider = "MTN"
+	ProviderOrange Provider = "Orange"
+	ProviderInvalid Provider = ""
 )
 
 func main() {
-	err := run()
-	if err != nil {
-		fmt.Println(err)
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	//load .env file
-	if _, err := os.Stat(".env"); err == nil {
-		err = godotenv.Load()
-		if err != nil {
-			return fmt.Errorf("failed to load env file: %w", err)
-		}
+	// Load environment variables
+	if err := loadEnvFile(); err != nil {
+		return err
 	}
 
-	//Get api key
+	// Get and validate API key
 	apiKey := os.Getenv("API_KEY")
 	if apiKey == "" {
-		return fmt.Errorf("API key is not set")
+		return fmt.Errorf("API_KEY environment variable is not set")
 	}
-
 	fmt.Println("API key loaded successfully")
 
-        var num string
-	var amt int
-	var r string
-	url1 := "https://demo.campay.net/api/collect/"
-
-for{
-        fmt.Printf("Please enter your mobile money number: ")
-        fmt.Scan(&num)
-
-	momoNum := make([]int, len(num))
-	for i, ch := range num {
-		momoNum[i] = int(ch - '0')
+	// Get phone number with validation
+	phoneNumber, err := getValidPhoneNumber()
+	if err != nil {
+		return err
 	}
-
-        if len(num) == 9 && momoNum[0] == 6 && (numValidator(momoNum) == "MTN" || numValidator(momoNum) == "Orange"){
-			break
-	}else {
-                fmt.Println("invalid number.\nPlease enter a 9 digit number.\nNumber must start with 6")
-        }
-
-        fmt.Println(numValidator(momoNum))
-
-}
-
-        printDivider()
-
-        fmt.Printf("\nPlease enter amount: ")
-        fmt.Scanln(&amt)
-
-        printDivider()
-
-        if (amt > 0) {
-        	fmt.Printf("\nReference: ")
-		fmt.Scan(&r)
 
 	printDivider()
 
-		if r != ""{
-		        body := map[string]string{ "from" : "237" + num,
-                                      		   "amount" : fmt.Sprintf("%d", amt), 
-						   "description": r,
-			}
-
-		fmt.Println("Sending payment request....")
-        	reference := requests.PaymentRequest(url1 , apiKey, body)
-
-		fmt.Println()
-		printDivider()
-
-		if reference != "" {
-			url2 := "https://demo.campay.net/api/transaction/"+ reference +"/"
-			requests.GetTransactionStatus(url2, apiKey)
-		}else {
-			fmt.Println("Could not retrieve reference")
-		}
-                printDivider()
-
-		}
-        }else {
-		fmt.Println("amount must be greater than zero")
+	// Get amount
+	amount, err := getValidAmount()
+	if err != nil {
+		return err
 	}
+
+	printDivider()
+
+	// Get reference
+	reference, err := getReference()
+	if err != nil {
+		return err
+	}
+
+	printDivider()
+
+	// Process payment
+	return processPayment(apiKey, phoneNumber, amount, reference)
+}
+
+// loadEnvFile loads the .env file if it exists
+func loadEnvFile() error {
+	if _, err := os.Stat(".env"); err == nil {
+		if err := godotenv.Load(); err != nil {
+			return fmt.Errorf("failed to load .env file: %w", err)
+		}
+	}
+	return nil
+}
+
+// getValidPhoneNumber prompts user for a valid phone number
+func getValidPhoneNumber() (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Print("Please enter your mobile money number: ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("failed to read input: %w", err)
+		}
+
+		phoneNumber := strings.TrimSpace(input)
+
+		if isValidPhoneNumber(phoneNumber) {
+			return phoneNumber, nil
+		}
+
+		fmt.Println("Invalid number.")
+		fmt.Println("Please enter a 9-digit number starting with 6")
+		fmt.Printf("Detected provider: %s\n", getProvider(phoneNumber))
+	}
+}
+
+// isValidPhoneNumber validates the phone number format and provider
+func isValidPhoneNumber(number string) bool {
+	if len(number) != requiredLength {
+		return false
+	}
+
+	if number[0] != '0'+firstDigit {
+		return false
+	}
+
+	provider := getProvider(number)
+	return provider == ProviderMTN || provider == ProviderOrange
+}
+
+// getProvider determines the mobile money provider based on the phone number
+func getProvider(number string) Provider {
+	if len(number) < 3 {
+		return ProviderInvalid
+	}
+
+	secondDigit := number[1] - '0'
+	thirdDigit := number[2] - '0'
+
+	switch secondDigit {
+	case 5:
+		if thirdDigit >= 0 && thirdDigit <= 4 {
+			return ProviderMTN
+		}
+		if thirdDigit >= 5 && thirdDigit <= 8 {
+			return ProviderOrange
+		}
+	case 7:
+		if thirdDigit >= 0 && thirdDigit <= 9 {
+			return ProviderMTN
+		}
+	case 8:
+		if thirdDigit >= 0 && thirdDigit <= 3 {
+			return ProviderMTN
+		}
+	case 9:
+		if thirdDigit >= 0 && thirdDigit <= 9 {
+			return ProviderOrange
+		}
+	}
+
+	return ProviderInvalid
+}
+
+// getValidAmount prompts user for a valid amount
+func getValidAmount() (int, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Print("\nPlease enter amount: ")
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return 0, fmt.Errorf("failed to read input: %w", err)
+		}
+
+		amountStr := strings.TrimSpace(input)
+		amount, err := strconv.Atoi(amountStr)
+		if err != nil {
+			fmt.Println("Invalid amount. Please enter a valid number.")
+			continue
+		}
+
+		if amount <= 0 {
+			fmt.Println("Amount must be greater than zero.")
+			continue
+		}
+
+		return amount, nil
+	}
+}
+
+// getReference prompts user for a payment reference
+func getReference() (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("\nReference: ")
+	input, err := reader.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("failed to read input: %w", err)
+	}
+
+	reference := strings.TrimSpace(input)
+	if reference == "" {
+		return "", fmt.Errorf("reference cannot be empty")
+	}
+
+	return reference, nil
+}
+
+// processPayment sends the payment request and checks status
+func processPayment(apiKey, phoneNumber string, amount int, description string) error {
+	body := map[string]string{
+		"from":        countryCode + phoneNumber,
+		"amount":      strconv.Itoa(amount),
+		"description": description,
+	}
+
+	fmt.Println("\nSending payment request...")
+	reference := requests.PaymentRequest(collectURL, apiKey, body)
+
+	fmt.Println()
+	printDivider()
+
+	if reference == "" {
+		return fmt.Errorf("could not retrieve payment reference")
+	}
+
+	statusURL := transactionURL + reference + "/"
+	requests.GetTransactionStatus(statusURL, apiKey)
+	printDivider()
 
 	return nil
 }
 
-
-func numValidator(num []int) string {
-	n := num[2]
-	//mtn number validator
-	if num[1] == 5 {
-	switch n {
-	case 0, 1, 2, 3 , 4:
-		return  "MTN"
-	case 5, 6, 7, 8:
-		return "Orange"
-	}
-	}else if num[1] == 7{
-        switch n {
-        case 0, 1, 2, 3 , 4, 5, 6, 7, 8, 9:
-                return  "MTN"
-	}
-	}else if num[1] == 8{
-        switch n {
-        case 0, 1, 2, 3:
-                return  "MTN"
-        }
-	}else if num[1] == 9{
-        switch n {
-        case 0, 1, 2, 3, 4, 5, 6, 7, 8, 9:
-                return  "Orange"
-        }
-	}
-
-	return "Please enter a valid mtn or orange number\n mtn valid number(1st 3 digits)\n - 65(0,...,4)\n - 67(0,...,9)\n - 68(0,..,3)\n Orange valid number(1st 3 digit)\n - 65(5,...,8)\n - 69(0,..,9)\n"
-}
-
+// printDivider prints a horizontal line separator
 func printDivider() {
-	width := 60
-	fmt.Println(strings.Repeat("-",width))
+	fmt.Println(strings.Repeat("-", dividerWidth))
 }
